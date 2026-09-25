@@ -1,0 +1,5 @@
+# Pinned to the exact versions used for the M2 evaluation runs.
+openai==2.54.0
+anthropic==1.8.0
+python-dotenv==1.2.2
+pytest==9.1.1

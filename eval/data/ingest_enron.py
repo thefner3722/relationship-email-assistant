@@ -1,7 +1,11 @@
 """Ingest one Enron mailbox into contacts.jsonl + messages.jsonl.
 
 Usage (from repo root):
-    python eval/data/ingest_enron.py [--min-messages 15] [--external-only]
+    python eval/data/ingest_enron.py [--min-messages 20] [--external-only]
+
+Contact rule (per data card): mutual exchange (>=1 message each way)
+and >=20 messages total; internal Enron contacts are included by
+default (--external-only opts out of that).
 
 Reads  eval/data/raw/maildir/kaminski-v/
 Writes eval/data/processed/contacts.jsonl
@@ -20,6 +24,7 @@ OWNER_ADDRS = {
     "vince.j.kaminski@enron.com", "kaminski@enron.com", "vkaminski@aol.com",
 }
 RAW = Path("eval/data/raw/maildir") / OWNER
+SYSTEM_RE = re.compile(r"announce|arsystem|mailman|no-?reply|donotreply|listserv|newsletter|@enron\.com$", re.I)
 def is_internal(a): return "enron" in a.split("@")[-1]
 def is_system(a): return bool(re.search(r"announce|arsystem|mailman|no-?reply|donotreply|listserv|newsletter|daemon|notification", a, re.I))
 OUT = Path("eval/data/processed")
@@ -39,6 +44,45 @@ def clean_body(text: str) -> str:
         text = text[: m.start()]
     lines = [l for l in text.splitlines() if not l.lstrip().startswith(">")]
     return "\n".join(lines).strip()
+
+
+def _decode(part) -> str:
+    raw = part.get_payload(decode=True)
+    if not raw:
+        return ""
+    charset = part.get_content_charset() or "latin-1"
+    try:
+        return raw.decode(charset, errors="replace")
+    except LookupError:
+        return raw.decode("latin-1", errors="replace")
+
+
+def extract_body(msg) -> str:
+    """Text body of a message, robust to multipart.
+
+    Single-part: decode the payload. Multipart: walk the parts, skip
+    attachments (Content-Disposition: attachment, or a filename) and
+    non-text parts, prefer the first text/plain; if there is none fall
+    back to text/html with tags stripped; else empty."""
+    if not msg.is_multipart():
+        return _decode(msg)
+    plain, html = [], []
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
+        disp = (part.get("Content-Disposition") or "").lower()
+        if disp.startswith("attachment") or part.get_filename():
+            continue
+        ctype = part.get_content_type()
+        if ctype == "text/plain":
+            plain.append(_decode(part))
+        elif ctype == "text/html":
+            html.append(_decode(part))
+    if plain:
+        return "\n".join(t for t in plain if t.strip())
+    if html:
+        return re.sub(r"<[^>]+>", " ", "\n".join(html))
+    return ""
 
 
 def addrs(msg, header):
@@ -66,9 +110,7 @@ def parse_file(path: Path):
         return None
     xfrom = (msg.get("X-From") or "").strip()
     name = re.sub(r"\s*<.*$", "", xfrom).strip() or frm[0][0]
-    body = msg.get_payload(decode=True)
-    body = body.decode("latin-1", errors="replace") if body else ""
-    body = clean_body(body)
+    body = clean_body(extract_body(msg))
     key = hashlib.md5(f"{dt.isoformat()}|{frm[0][1]}|{msg.get('Subject','')}|{body[:300]}".encode()).hexdigest()
     return {
         "message_id": mid,
@@ -81,6 +123,25 @@ def parse_file(path: Path):
         "body": body,
         "folder": path.relative_to(RAW).parts[0],
     }
+
+
+def relationship_records(per_contact: dict, keep: set) -> list:
+    """One record per (contact, message_id). An outgoing email sent to
+    two retained contacts appears once in EACH contact's history; the
+    same message is never written twice for the same contact. Dedup key
+    is (contact, message_id), NOT message_id alone.
+
+    Output order is deterministic: contacts sorted, then each contact's
+    messages sorted by (date, message_id)."""
+    seen, out = set(), []
+    for a in sorted(keep):
+        for m in sorted(per_contact[a], key=lambda x: (x.get("date", ""), x["message_id"])):
+            key = (a, m["message_id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({**m, "contact": a})
+    return out
 
 
 def main():
@@ -97,7 +158,7 @@ def main():
     if not RAW.exists():
         sys.exit(f"missing {RAW} — download per README")
 
-    files = [p for p in RAW.rglob("*") if p.is_file()]
+    files = sorted(p for p in RAW.rglob("*") if p.is_file())   # deterministic order
     seen, msgs = set(), []
     for p in files:
         m = parse_file(p)
@@ -149,14 +210,11 @@ def main():
     with open(OUT / "contacts.jsonl", "w") as f:
         for c in contacts:
             f.write(json.dumps(c) + "\n")
-    written = set()
+    records = relationship_records(per_contact, keep)
     with open(OUT / "messages.jsonl", "w") as f:
-        for a in keep:
-            for m in per_contact[a]:
-                if m["message_id"] in written:
-                    continue
-                written.add(m["message_id"])
-                f.write(json.dumps({**m, "contact": a}) + "\n")
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+    written = {r["message_id"] for r in records}
 
     all_dates = sorted(m["date"] for m in msgs)
     n_sent = sum(m["direction"] == "sent" for m in msgs)
@@ -166,9 +224,9 @@ def main():
     print(f"contacts >= {args.min_messages:<3}      : {len(contacts)}  "
           f"(internal {sum(c['internal'] for c in contacts)}, "
           f"external {sum(not c['internal'] for c in contacts)})")
-    print(f"messages kept        : {len(written)}")
+    print(f"messages kept        : {len(written)} unique, {len(records)} contact-attributed records")
     print("contacts at other thresholds (same two-way rule):")
-    for t in (20, 30, 50, 100):
+    for t in (15, 30, 50, 100):
         n = sum(c["n_messages"] >= t for c in contacts)
         e = sum(c["n_messages"] >= t and not c["internal"] for c in contacts)
         print(f"  >= {t:<3}: {n:3d}  (external {e})")
