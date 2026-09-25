@@ -1,0 +1,4 @@
+ts,system,n,n_error,no_fabrication,no_contradicted_commitment,no_stale_item,no_new_commitment,all_hard_pass,specificity,mean_prompt_facts,judge_overall,judge_instructions_and_style,judge_aligns_with_objectives,judge_addresses_commitments,judge_accounts_for_context,ref_judge_overall,mean_cost_usd,mean_prompt_tokens,p50_latency_s
+20260925-230924,oss,0,5,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A,N/A
+20260925-231429,oss,5,0,0.4,1.0,0.8,0.6,0.4,0.09873672218859657,42.2,3.4083333333333337,3.4,3.7,3.0,3.3,N/A,0.0,1467.8,2.162881208001636
+20260925-232453,oss,5,0,0.4,1.0,0.8,0.6,0.4,0.11747098485218196,40.8,3.45,3.4,3.7,3.1666666666666665,3.4,N/A,0.0,1467.8,2.0834134160541
