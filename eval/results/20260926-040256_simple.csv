@@ -1,0 +1,3 @@
+id,system,bucket,contact,model,backend,no_fabrication,no_contradicted_commitment,no_stale_item,no_new_commitment,all_hard_pass,specificity,n_prompt_facts,judge_instructions_and_style,judge_aligns_with_objectives,judge_addresses_commitments,judge_accounts_for_context,judge_overall,prompt_tokens,completion_tokens,cost_usd,latency_s,judge_attempts,judge_invalid_attempts,wall_s,error,ref_judge_overall
+c001,simple,routine,deng@isye.gatech.edu,gpt-6-sol,openai,True,True,True,True,True,0.08,25,5.0,4.0,3.0,3.0,3.75,1729,64,0.004098,2.930928208050318,5,0,99.91870812501293,,N/A
+c002,simple,stale_item,jason.sokolov@enron.com,gpt-6-sol,openai,False,True,True,True,False,0.125,24,5.0,5.0,N/A,5.0,5.0,1049,28,0.002378,1.2200121249770746,5,0,91.18608870799653,,N/A

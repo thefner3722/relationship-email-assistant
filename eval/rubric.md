@@ -13,7 +13,9 @@ them?
 
 - **5** — Fully compliant with every applicable instruction and style setting.
 - **4** — Compliant; a minor stylistic instruction is missed.
-- **3** — Broadly compliant but generic; doesn't clearly reflect the specific instructions set. *(For Enron cases: no instruction was ever set, so this defaults to 5 unless the draft is unprofessional.)*
+- **3** — Broadly compliant but generic; doesn't clearly reflect the specific instructions set.
+
+*(For Enron cases: no explicit style instruction was ever set, so this dimension is calibrated against Vince Kaminski's actual observed tone, read directly from 3 real sent messages in the corpus, not assumed: terse and direct, short sentences, minimal hedging ("I shall...", "Can we..."), delegates without over-explaining, closes with first name only, no unnecessary pleasantries or small talk -- one real example is a single line: "Anita, Done. Vince." A draft matching that register scores 5. A draft that is polite and complete but noticeably more padded, hedged, or elaborate than his real style scores 3. A draft that is chatty, apologetic, or includes unnecessary small talk scores 1-2, since that register was not observed in the sampled messages used for calibration.)*
 - **2** — Violates a minor instruction.
 - **1** — Violates a clear, explicit instruction.
 
@@ -58,6 +60,6 @@ qualitative 1–5 rubric score below — the two are independent numbers.
 Specificity is a third, separate companion metric and does not enter
 the overall score either.
 
-For each applicable dimension, take the median across the configured number of valid judge runs (`JUDGE_VALID_RUNS`, default: 5).
+For each applicable dimension, take the median across the configured number of valid judge runs (`JUDGE_VALID_RUNS`, default: 3).
 Overall = mean of the applicable dimension medians. Any dimension
 marked N/A for a case (see above) is excluded from that mean.

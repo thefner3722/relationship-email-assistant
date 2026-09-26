@@ -27,9 +27,11 @@ CASE = {
 
 def fake_call(calls):
     """Records every call_model invocation; returns a fixed reply."""
-    def _call(provider, model, prompt, *, max_tokens, temperature):
+    def _call(provider, model, prompt, *, max_tokens, temperature,
+             cacheable=False, reasoning_effort=None):
         calls.append({"provider": provider, "model": model, "prompt": prompt,
-                      "max_tokens": max_tokens, "temperature": temperature})
+                      "max_tokens": max_tokens, "temperature": temperature,
+                      "reasoning_effort": reasoning_effort})
         return {"text": "Hi Priya, Friday as planned. Vince", "prompt_tokens": 100,
                 "completion_tokens": 20, "latency_s": 0.5, "model": model, "backend": provider}
     return _call
@@ -47,6 +49,18 @@ def _patch_all(monkeypatch, calls):
 
 def test_registry_has_three_systems():
     assert set(SYSTEMS) == {"simple", "oss", "layer0"}
+
+
+def test_gen_reasoning_effort_reaches_the_draft_call(monkeypatch):
+    """config.GEN_REASONING_EFFORT reaches call_model for both simple and
+    layer0 -- the whole point of drafting cheap / judging carefully only
+    works if this actually gets through, not silently dropped."""
+    calls = []; _patch_all(monkeypatch, calls)
+    monkeypatch.setattr(config, "GEN_REASONING_EFFORT", "low")
+    simple.draft(CASE)
+    layer0.draft(CASE)
+    assert calls[0]["reasoning_effort"] == "low"
+    assert calls[1]["reasoning_effort"] == "low"
 
 
 def test_fixed_block_identical_across_systems(monkeypatch):
@@ -95,8 +109,9 @@ def test_every_backend_gets_same_draft_token_cap(monkeypatch):
 
 
 def test_provider_adapters_pass_the_cap_through(monkeypatch):
-    """The cap reaches each adapter's request: OpenAI/Anthropic/OpenRouter
-    as max_tokens, Ollama as num_predict."""
+    """The cap reaches each adapter's real API call: Anthropic/OpenRouter as
+    max_tokens, OpenAI as max_completion_tokens (max_tokens is deprecated
+    there), Ollama as num_predict."""
     import json
     seen = {}
 
@@ -139,7 +154,7 @@ def test_provider_adapters_pass_the_cap_through(monkeypatch):
 
     for prov in ("openai", "anthropic", "openrouter", "ollama"):
         providers.call_model(prov, "m", "p", max_tokens=555, temperature=0)
-    assert seen["openai"]["max_tokens"] == 555
+    assert seen["openai"]["max_completion_tokens"] == 555
     assert seen["anthropic"]["max_tokens"] == 555
     assert seen["openrouter"]["max_tokens"] == 555
     assert seen["ollama"]["options"]["num_predict"] == 555

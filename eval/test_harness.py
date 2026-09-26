@@ -5,7 +5,7 @@ import csv
 import json
 
 import harness
-from test_metrics import make_mock_call_fn
+from test_metrics import make_combined_mock
 
 HIST = [{"from_name": "Priya", "from": "priya@x.com", "to": ["vince@x.com"], "date": f"2001-0{i+1}-01",
          "subject": f"s{i}", "body": f"message number {i}"} for i in range(6)]
@@ -37,18 +37,13 @@ def JUDGE(prompt):
             "aligns_with_objectives": "N/A" if "no objective applies" in prompt else 4,
             "addresses_commitments": "N/A" if "no commitment is relevant" in prompt else 4,
             "accounts_for_context": 3}
-MOCK = make_mock_call_fn({
-    "List every factual claim": {"claims": [], "pass": True},
-    "contradict, deny, or ignore": {"pass": True, "reason": "ok"},
-    "raise, ask about, or re-offer": {"pass": True, "reason": "ok"},
-    "offer, promise, or propose": {"pass": True, "new_commitments": []},
-})
+MOCK = make_combined_mock()
 
 
-def _mock_with_spec(prompt):
-    """Hard tests + judge from MOCK; specificity stage 1 extracts facts
-    from the drafting prompt text (2 if it mentions MEMORY, else 0),
-    stage 2 says item 1 is represented."""
+def _mock_with_spec(prompt, cacheable=False):
+    """Hard tests (combined, one call) + judge from MOCK; specificity
+    stage 1 extracts facts from the drafting prompt text (2 if it
+    mentions MEMORY, else 0), stage 2 says item 1 is represented."""
     if "List every distinct factual item" in prompt:
         return {"facts": ["Q3 deck due Friday", "Priya is on finance"]} if "MEMORY" in prompt else {"facts": []}
     if "correctly represented" in prompt:
@@ -100,10 +95,18 @@ def test_harness_end_to_end(tmp_path, monkeypatch):
     assert rows0[0]["ref_judge_overall"] == 3.75
     assert rows0[0]["cost_usd"] == 0.0 and rows0[0]["latency_s"] == 1.2
 
-    # files
+    # files -- c004 (IncompleteCaseError, raised by metric_case AFTER a real
+    # draft was generated) still has its draft+prompt preserved: an
+    # evaluator failure must never destroy an already-generated draft.
+    # c003 (RuntimeError from draft_fn itself) correctly has no draft at
+    # all -- drafting never happened there.
     assert (tmp_path / "TEST_layer0.csv").exists()
     drafts = [json.loads(l) for l in (tmp_path / "TEST_layer0_drafts.jsonl").open()]
-    assert len(drafts) == 2 and drafts[0]["draft"].startswith("Hi Priya")
+    assert len(drafts) == 3 and drafts[0]["draft"].startswith("Hi Priya")
+    assert {d["id"] for d in drafts} == {"c001", "c002", "c004"}
+    c004_draft = next(d for d in drafts if d["id"] == "c004")
+    assert c004_draft["draft"] == "Hi Priya, Friday as planned." and c004_draft["prompt"] == "no facts here"
+    assert "hard_tests" not in c004_draft, "c004 never reached hard tests -- no partial eval fields expected"
 
     s0 = harness.summarize("layer0", rows0, ts)
     s1 = harness.summarize("simple", rows1, ts)
@@ -148,3 +151,32 @@ def test_load_cases_filters_by_split(tmp_path, monkeypatch):
     assert len(harness.load_cases("dev", None)) == 4
     assert len(harness.load_cases("dev", 2)) == 2
     assert harness.load_cases("test", None) == []
+
+
+def test_reference_judge_failure_does_not_wipe_primary_row(tmp_path, monkeypatch):
+    """A --judge-reference failure must not turn an otherwise-successful
+    primary row into an error row: the reference judge runs on the
+    reference_reply's text, which is different from the draft, so a mock
+    that only fails when it sees the reference text isolates exactly this
+    case."""
+    monkeypatch.setattr(harness, "RESULTS", tmp_path)
+
+    def flaky_ref_mock(prompt, cacheable=False):
+        # The reference judge prompt embeds only "Friday as planned." (the
+        # bare reference_reply text); the primary draft judge prompt embeds
+        # "Hi Priya, Friday as planned." (the draft) -- checking for the
+        # draft's own preamble absent is what isolates the reference call.
+        if ("Friday as planned." in prompt and "Hi Priya" not in prompt
+                and "You are scoring a drafted email reply" in prompt):
+            return "not valid json"  # forces EvaluationError for the reference-reply judge call only
+        return _mock_with_spec(prompt, cacheable=cacheable)
+
+    rows = harness.run_system("layer0", CASES[:1], "REFFAIL", draft_fn=fake_layer0,
+                              call_fn=flaky_ref_mock, judge_runs=3, judge_reference=True, quiet=True)
+    row = rows[0]
+    assert row["error"] == "", "primary row must not be replaced by the reference-judge failure"
+    assert row["all_hard_pass"] is True
+    assert row["specificity"] == 0.5
+    assert row["judge_overall"] == 3.75
+    assert row["ref_judge_overall"] == "N/A"
+    assert "ref_judge_error" in row and row["ref_judge_error"]

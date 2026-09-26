@@ -33,5 +33,6 @@ def build_capped_prompt(case: dict, cap: int = None) -> tuple:
 def draft(case: dict) -> dict:
     prompt, _ = build_capped_prompt(case)
     r = call_model(config.GEN_PROVIDER, config.GEN_MODEL, prompt,
-                   max_tokens=config.MAX_DRAFT_TOKENS, temperature=config.GEN_TEMPERATURE)
+                   max_tokens=config.MAX_DRAFT_TOKENS, temperature=config.GEN_TEMPERATURE,
+                   reasoning_effort=config.GEN_REASONING_EFFORT)
     return _finish(prompt, r)

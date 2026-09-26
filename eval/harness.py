@@ -1,6 +1,6 @@
 """Evaluation harness.
 
-    python eval/harness.py --system simple --split dev [--limit N] [--judge-runs 5] [--judge-max-attempts 15]
+    python eval/harness.py --system simple --split dev [--limit N] [--judge-runs 3] [--judge-max-attempts 5]
     python eval/harness.py --system all --split dev --limit 5
 
 For every (system, case): draft, then every metric, one flat row.
@@ -85,44 +85,68 @@ def metric_case(case: dict) -> dict:
 
 def score_one(system: str, case: dict, *, draft_fn, call_fn, judge_runs: int,
               judge_reference: bool, judge_max_attempts: int = None) -> tuple[dict, dict]:
-    """Returns (row, draft_record)."""
+    """Returns (row, draft_record). draft_record always carries the draft
+    and prompt once draft_fn succeeds, even if everything after it raises --
+    an evaluator failure (hard tests, specificity, judge) must never destroy
+    an already-generated draft, since those are exactly the cases most
+    worth inspecting later. Only a draft_fn failure itself (no draft exists
+    yet) is left to propagate to the caller, which is run_system()'s
+    existing no-draft error path.
+
+    wall_s is the full end-to-end time for the case, including the
+    optional reference-reply judge call -- captured right before return,
+    not before that call runs."""
     t0 = time.perf_counter()
     out = draft_fn(case)
-    mc = metric_case(case)
     draft = out["draft"]
+    record = {"id": case["id"], "system": system, "draft": draft, "prompt": out["prompt"]}
 
-    ht = metrics.hard_tests(mc, draft, call_fn=call_fn)
-    # specificity: facts are extracted from the exact prompt this system
-    # sent (stage 1, cached), then matched against the draft (stage 2)
-    prompt_facts = metrics.extract_prompt_facts(out["prompt"], call_fn=call_fn)
-    spec = metrics.specificity(out["prompt"], draft, call_fn=call_fn)
-    jd = metrics.judge(mc, draft, call_fn=call_fn, valid_runs=judge_runs,
-                       max_attempts=judge_max_attempts)
-
-    row = {
-        "id": case["id"], "system": system, "bucket": case.get("bucket", ""),
-        "contact": case["contact"], "model": out["model"], "backend": out.get("backend", ""),
-        **{h: ht[h]["pass"] for h in HARD},
-        "all_hard_pass": all(ht[h]["pass"] for h in HARD),
-        "specificity": spec,
-        "n_prompt_facts": len(prompt_facts),
-        **{f"judge_{d}": jd[d] for d in DIMS},
-        "judge_overall": jd["overall"],
-        "prompt_tokens": out["prompt_tokens"], "completion_tokens": out["completion_tokens"],
-        "cost_usd": metrics.cost(out), "latency_s": metrics.latency(out),
-        "judge_attempts": jd["attempts"], "judge_invalid_attempts": jd["invalid_attempts"],
-        "wall_s": time.perf_counter() - t0, "error": "",
-    }
-    if judge_reference and case.get("reference_reply"):
-        ref = case["reference_reply"]
-        ref_text = ref if isinstance(ref, str) else ref.get("body", "")
-        rj = metrics.judge(mc, ref_text, call_fn=call_fn, valid_runs=judge_runs,
+    try:
+        mc = metric_case(case)
+        ht = metrics.hard_tests(mc, draft, call_fn=call_fn)
+        # specificity: facts are extracted from the exact prompt this system
+        # sent (stage 1, cached), then matched against the draft (stage 2)
+        prompt_facts = metrics.extract_prompt_facts(out["prompt"], call_fn=call_fn)
+        spec = metrics.specificity(out["prompt"], draft, call_fn=call_fn)
+        jd = metrics.judge(mc, draft, call_fn=call_fn, valid_runs=judge_runs,
                            max_attempts=judge_max_attempts)
-        row["ref_judge_overall"] = rj["overall"]
-    else:
+
+        row = {
+            "id": case["id"], "system": system, "bucket": case.get("bucket", ""),
+            "contact": case["contact"], "model": out["model"], "backend": out.get("backend", ""),
+            **{h: ht[h]["pass"] for h in HARD},
+            "all_hard_pass": all(ht[h]["pass"] for h in HARD),
+            "specificity": spec,
+            "n_prompt_facts": len(prompt_facts),
+            **{f"judge_{d}": jd[d] for d in DIMS},
+            "judge_overall": jd["overall"],
+            "prompt_tokens": out["prompt_tokens"], "completion_tokens": out["completion_tokens"],
+            "cost_usd": metrics.cost(out), "latency_s": metrics.latency(out),
+            "judge_attempts": jd["attempts"], "judge_invalid_attempts": jd["invalid_attempts"],
+            "error": "",
+        }
         row["ref_judge_overall"] = "N/A"
-    record = {"id": case["id"], "system": system, "draft": draft, "prompt": out["prompt"],
-              "prompt_facts": prompt_facts, "hard_tests": ht, "judge": jd}
+        record.update({"prompt_facts": prompt_facts, "hard_tests": ht, "judge": jd})
+    except Exception as e:
+        row = {"id": case["id"], "system": system, "bucket": case.get("bucket", ""),
+               "contact": case["contact"], "error": f"{type(e).__name__}: {e}"}
+
+    # Reference-reply judging is optional and independent: its failure must
+    # never overwrite an otherwise-complete, valid primary row. Only runs
+    # when the primary row succeeded (no point judging a reference against
+    # a case that already errored) and reference_reply is actually present.
+    if judge_reference and not row.get("error") and case.get("reference_reply"):
+        try:
+            mc = metric_case(case)
+            ref = case["reference_reply"]
+            ref_text = ref if isinstance(ref, str) else ref.get("body", "")
+            rj = metrics.judge(mc, ref_text, call_fn=call_fn, valid_runs=judge_runs,
+                               max_attempts=judge_max_attempts)
+            row["ref_judge_overall"] = rj["overall"]
+        except Exception as e:
+            row["ref_judge_error"] = f"{type(e).__name__}: {e}"
+
+    row["wall_s"] = time.perf_counter() - t0
     return row, record
 
 
@@ -223,11 +247,25 @@ def print_table(summaries: list[dict]):
     cols = [c for c in SUMMARY_COLUMNS if c not in ("ts", "mean_prompt_tokens")]
     if all(s.get("ref_judge_overall") == "N/A" for s in summaries):
         cols.remove("ref_judge_overall")
-    short = {c: c.replace("judge_", "j_").replace("no_", "").replace("_", " ") for c in cols}
+    short = {c: c.replace("judge_", "j_").replace("no_", "no ").replace("_", " ") for c in cols}
     widths = {c: max(len(short[c]), *(len(fmt(s.get(c, "N/A"))) for s in summaries)) for c in cols}
     print("  ".join(short[c].ljust(widths[c]) for c in cols))
     for s in summaries:
         print("  ".join(fmt(s.get(c, "N/A")).ljust(widths[c]) for c in cols))
+
+
+def summarize_by(field: str, system: str, rows: list[dict], ts: str) -> list[dict]:
+    """One summary row per distinct value of `field` (e.g. bucket) found in
+    rows, each labeled "system/value" so it prints alongside the per-system
+    table without being confused for another real system. Skips rows missing
+    the field (empty bucket) rather than lumping them into a fake group."""
+    groups = {}
+    for r in rows:
+        v = r.get(field)
+        if not v:
+            continue
+        groups.setdefault(v, []).append(r)
+    return [summarize(f"{system}/{v}", subset, ts) for v, subset in sorted(groups.items())]
 
 
 def main(argv=None):
@@ -240,7 +278,9 @@ def main(argv=None):
     ap.add_argument("--judge-max-attempts", type=int, default=None,
                     help=f"give up after this many judge calls (default JUDGE_MAX_ATTEMPTS={metrics.config.JUDGE_MAX_ATTEMPTS})")
     ap.add_argument("--judge-reference", action="store_true",
-                    help="also judge the owner's real reply (one extra judge call per case)")
+                    help="also score the owner's real reply with the rubric (adds judge calls per case)")
+    ap.add_argument("--report-by", choices=["bucket"], default=None,
+                    help="also print a breakdown by this case field (currently: bucket)")
     a = ap.parse_args(argv)
 
     if a.split == "test":
@@ -248,15 +288,23 @@ def main(argv=None):
     cases = load_cases(a.split, a.limit)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     systems = list(SYSTEMS) if a.system == "all" else [a.system]
-    summaries = []
+    summaries, breakdowns = [], []
     for sysname in systems:
         rows = run_system(sysname, cases, ts, judge_runs=a.judge_runs,
                           judge_reference=a.judge_reference,
                           judge_max_attempts=a.judge_max_attempts)
         summaries.append(summarize(sysname, rows, ts))
+        if a.report_by:
+            breakdowns.extend(summarize_by(a.report_by, sysname, rows, ts))
     append_summary(summaries)
     print_table(summaries)
+    if breakdowns:
+        print(f"\nby {a.report_by}:")
+        print_table(breakdowns)
+        write_rows(RESULTS / f"{ts}_by_{a.report_by}.csv", breakdowns)
     print(f"\nresults: {RESULTS}/{ts}_*.csv, summary appended to {RESULTS}/summary.csv")
+    if breakdowns:
+        print(f"by-{a.report_by} breakdown: {RESULTS}/{ts}_by_{a.report_by}.csv")
 
 
 if __name__ == "__main__":

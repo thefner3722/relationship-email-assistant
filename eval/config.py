@@ -43,10 +43,19 @@ def _int(var, default):
 # --- Limits ---------------------------------------------------------------
 MAX_DRAFT_TOKENS = _int("MAX_DRAFT_TOKENS", 800)      # reply cap, identical on every backend
 MAX_CONTEXT_TOKENS = _int("MAX_CONTEXT_TOKENS", 60000)  # layer0: cap on the exact final prompt
-JUDGE_VALID_RUNS = _int("JUDGE_VALID_RUNS", 5)        # valid complete judge responses needed
-JUDGE_MAX_ATTEMPTS = _int("JUDGE_MAX_ATTEMPTS", 15)   # give up (error) after this many calls
+JUDGE_VALID_RUNS = _int("JUDGE_VALID_RUNS", 3)        # valid complete judge responses needed
+JUDGE_MAX_ATTEMPTS = _int("JUDGE_MAX_ATTEMPTS", 5)    # give up (error) after this many calls
+JUDGE_MAX_TOKENS = _int("JUDGE_MAX_TOKENS", 16000)    # reasoning tokens (OpenAI reasoning models)
+                                                        # count against this same ceiling, so it
+                                                        # needs real headroom above the visible
+                                                        # JSON reply once JUDGE_REASONING_EFFORT
+                                                        # is anything but "none"
+HARD_TEST_VOTES = _int("HARD_TEST_VOTES", 3)          # votes per (combined) hard-test call; unanimous to pass
+HARD_TEST_MAX_ATTEMPTS = _int("HARD_TEST_MAX_ATTEMPTS", 5)  # retry cap for malformed hard-test responses
 GEN_TEMPERATURE = float(os.environ.get("GEN_TEMPERATURE", "0") or 0)
 JUDGE_TEMPERATURE = float(os.environ.get("JUDGE_TEMPERATURE", "0") or 0)
+GEN_REASONING_EFFORT = os.environ.get("GEN_REASONING_EFFORT") or None      # OpenAI only; ignored elsewhere
+JUDGE_REASONING_EFFORT = os.environ.get("JUDGE_REASONING_EFFORT") or None  # OpenAI only; ignored elsewhere
 
 
 # --- Prices: USD per 1M tokens (input, output) ---------------------------

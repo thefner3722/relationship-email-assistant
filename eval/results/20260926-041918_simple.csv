@@ -1,0 +1,6 @@
+id,system,bucket,contact,model,backend,no_fabrication,no_contradicted_commitment,no_stale_item,no_new_commitment,all_hard_pass,specificity,n_prompt_facts,judge_instructions_and_style,judge_aligns_with_objectives,judge_addresses_commitments,judge_accounts_for_context,judge_overall,prompt_tokens,completion_tokens,cost_usd,latency_s,judge_attempts,judge_invalid_attempts,wall_s,error,ref_judge_overall
+c001,simple,routine,deng@isye.gatech.edu,gpt-6-sol,openai,True,True,True,True,True,0.08333333333333333,24,5.0,4.0,3.0,3.0,3.75,1729,36,0.003818,2.831965542049147,5,0,92.56873212510254,,N/A
+c002,simple,stale_item,jason.sokolov@enron.com,gpt-6-sol,openai,False,True,True,True,False,0.08,25,5.0,5.0,N/A,5.0,5.0,1049,28,0.002378,1.2687047079671174,5,0,82.97887237509713,,N/A
+c003,simple,routine,ashley.baxter@enron.com,gpt-6-sol,openai,True,True,True,False,False,0.17391304347826086,23,1.0,5.0,3.0,2.0,2.75,1361,51,0.003232,1.314749417011626,5,0,136.85985037498176,,N/A
+c004,simple,buried_commitment,lance.cunningham@enron.com,gpt-6-sol,openai,True,True,True,True,True,0.0625,32,5.0,5.0,5.0,3.0,4.5,1968,23,0.004166,1.2843380409758538,5,0,91.61551545804832,,N/A
+c005,simple,stale_item,kenneth.parkhill@enron.com,gpt-6-sol,openai,True,True,True,True,True,0.07692307692307693,26,5.0,5.0,N/A,5.0,5.0,1146,52,0.002812,1.5239652920281515,5,0,100.03669291699771,,N/A

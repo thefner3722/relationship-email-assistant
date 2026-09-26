@@ -72,9 +72,10 @@ def build_judge_prompt(context: str, incoming: str, draft: str,
 
     relationship_objective must be inferred ONCE, before evaluation,
     from history available before the target case (see the rubric's
-    dimension 2 note) — and passed in fixed here, the same for all 5
-    judge runs on this case. Never let the judge infer its own; that
-    was the bug this rewrite fixes. Pass None if no clear objective
+    dimension 2 note) — and passed in fixed here, the same for every
+    judge run on this case (config.JUDGE_VALID_RUNS). Never let the
+    judge infer its own; that was the bug this rewrite fixes. Pass None
+    if no clear objective
     could be inferred; it renders as "N/A" in the prompt.
 
     commitment_relevant is likewise decided ONCE from case metadata
@@ -103,8 +104,9 @@ def build_judge_prompt(context: str, incoming: str, draft: str,
 
 
 # --- Hard tests ---------------------------------------------------------
-# Four yes/no checks per the build spec. Each is a separate judge-model call
-# (JUDGE_TEMPERATURE, default 0, JSON out), run 3x; unanimous 3/3 agreement is required to pass.
+# Four checks, combined into ONE judge-model call per vote (JUDGE_TEMPERATURE,
+# default 0, JSON out), voted config.HARD_TEST_VOTES times (default 3);
+# unanimous agreement per test is required to pass.
 # Hard tests are independent binary checks. They do not modify or cap the
 # qualitative 1-5 rubric score built above; the two are reported separately.
 # Specificity (below) is a separate companion metric, also independent.
@@ -115,11 +117,41 @@ def build_judge_prompt(context: str, incoming: str, draft: str,
 # repeating a commitment already in history is allowed; inventing a
 # call/deadline/favor that was neither committed nor requested fails.
 
-HARD_TEST_PROMPTS = {
-    "no_fabrication": """List every factual claim in the draft below (names, dates, \
-numbers, events, commitments). For each, decide if it is supported by CONTEXT or \
-INCOMING. Return JSON only: {{"claims": [{{"claim": "...", "supported": true|false}}], \
-"pass": true|false}}. pass = true only if every claim is supported.
+HARD_TEST_NAMES = ["no_fabrication", "no_contradicted_commitment",
+                   "no_stale_item", "no_new_commitment"]
+
+# All four checks in ONE prompt (one call instead of four) -- they all look
+# at the exact same case material, so they can share a single question.
+# Voted config.HARD_TEST_VOTES times for the same unanimous-agreement
+# reliability as before; only the call count per vote changed, 4 -> 1.
+COMBINED_HARD_TEST_PROMPT = """Check the drafted reply below against four independent \
+criteria. Judge each one separately and honestly -- a reply can pass some and fail \
+others.
+
+1. no_fabrication: List every factual claim in the draft (names, dates, numbers, \
+events, commitments). Is each one supported by CONTEXT or INCOMING? Passes only if \
+every claim is supported.
+
+2. no_contradicted_commitment: Given the commitments already made in this \
+relationship's history (COMMITMENTS_IN_HISTORY), does the draft contradict, deny, or \
+ignore any of them, given that INCOMING touches on them? Passes if none is \
+contradicted, denied, or ignored.
+
+3. no_stale_item: Given items already resolved/closed in this relationship's history \
+(RESOLVED_ITEMS), does the draft raise, ask about, or re-offer any of them as if \
+still open? Passes if none is re-raised as open. If INCOMING itself asks about a \
+resolved item, a reply that correctly reports it as resolved is NOT re-raising it \
+and passes.
+
+4. no_new_commitment: Does the draft offer, promise, or propose anything (a meeting, \
+a deliverable, a deadline, a favor) that is NOT already in COMMITMENTS_IN_HISTORY and \
+NOT directly requested in INCOMING? Passes if nothing new is promised.
+
+COMMITMENTS_IN_HISTORY:
+{commitments_in_history}
+
+RESOLVED_ITEMS:
+{resolved_items}
 
 CONTEXT:
 {context}
@@ -129,70 +161,38 @@ INCOMING EMAIL:
 
 DRAFTED REPLY:
 {draft}
-""",
-    "no_contradicted_commitment": """Here are commitments already made in this \
-relationship's history:
-{commitments_in_history}
 
-Does the drafted reply below contradict, deny, or ignore any of these commitments, \
-given that the incoming email touches on them? Return JSON only: \
-{{"pass": true|false, "reason": "..."}}. pass = true if no commitment is contradicted, \
-denied, or ignored.
+Return JSON only, exactly these four keys, each a JSON boolean, plus one reasoning \
+string per key:
+{{"no_fabrication": true|false, "no_contradicted_commitment": true|false, \
+"no_stale_item": true|false, "no_new_commitment": true|false, \
+"reasoning": {{"no_fabrication": "...", "no_contradicted_commitment": "...", \
+"no_stale_item": "...", "no_new_commitment": "..."}}}}
+"""
 
-INCOMING EMAIL:
-{incoming}
 
-DRAFTED REPLY:
-{draft}
-""",
-    "no_stale_item": """Here are items already resolved/closed in this relationship's \
-history:
-{resolved_items}
-
-INCOMING EMAIL:
-{incoming}
-
-Does the drafted reply below raise, ask about, or re-offer any of these resolved \
-items as if they were still open? Return JSON only: {{"pass": true|false, \
-"reason": "..."}}. pass = true if no resolved item is re-raised as open. If the \
-incoming email itself asks about a resolved item, a reply that correctly reports \
-it as resolved is NOT re-raising it and passes.
-
-DRAFTED REPLY:
-{draft}
-""",
-    "no_new_commitment": """Here are commitments already made in this relationship's \
-history:
-{commitments_in_history}
-
-INCOMING EMAIL:
-{incoming}
-
-Does the drafted reply below offer, promise, or propose anything (a meeting, a \
-deliverable, a deadline, a favor) that is NOT already in the commitments above and \
-NOT directly requested in the incoming email? Return JSON only: \
-{{"pass": true|false, "new_commitments": ["..."]}}. pass = true if nothing new is \
-promised.
-
-DRAFTED REPLY:
-{draft}
-""",
-}
-
-def call_judge_model(prompt: str) -> dict:
+def call_judge_model(prompt: str, cacheable: bool = False) -> dict:
     """One judge call on the configured JUDGE_PROVIDER/JUDGE_MODEL at JUDGE_TEMPERATURE (default 0),
     JSON-parsed. Provider and model come from config.py (eval/.env) --
     nothing here hardcodes either. Every hard test, the specificity
     stages and the rubric judge route through this one function.
+    cacheable=True marks the prompt as reused (repeated verbatim across
+    hard-test votes or judge attempts) so provider adapters that support
+    prompt caching (currently anthropic) bill repeats at a discount; a
+    prompt only ever sent once (specificity) should leave this False.
     Raises EvaluationError if the response is not a JSON object."""
     # 4096 headroom: adaptive-thinking models can spend part of max_tokens
     # on an internal thinking block before the JSON answer; a small cap
     # risks truncating the JSON (seen in practice with Opus 5.5 on longer
     # prompts) and json.loads then fails, which is correctly treated as a
     # malformed response by the caller -- but a cap this tight makes that
-    # failure common rather than exceptional.
+    # failure common rather than exceptional. Raised to config.JUDGE_MAX_TOKENS
+    # (default 16000): OpenAI reasoning models bill hidden reasoning tokens
+    # against this exact same ceiling, so it needs more headroom than
+    # Anthropic thinking once JUDGE_REASONING_EFFORT is non-"none".
     r = call_model(config.JUDGE_PROVIDER, config.JUDGE_MODEL, prompt,
-                   max_tokens=4096, temperature=config.JUDGE_TEMPERATURE)
+                   max_tokens=config.JUDGE_MAX_TOKENS, temperature=config.JUDGE_TEMPERATURE,
+                   cacheable=cacheable, reasoning_effort=config.JUDGE_REASONING_EFFORT)
     text = r["text"]
     if text.startswith("```"):
         text = text.strip("`").split("\n", 1)[-1].rsplit("```", 1)[0]
@@ -205,50 +205,90 @@ def call_judge_model(prompt: str) -> dict:
     return data
 
 
-def run_hard_test(test_name: str, *, call_fn=call_judge_model, **fmt_kwargs) -> dict:
-    """Run one hard test 3x against call_fn; unanimous 3/3 agreement required to pass.
-    fmt_kwargs must supply whatever HARD_TEST_PROMPTS[test_name] needs
-    (context, incoming, draft, commitments_in_history, resolved_items)."""
-    prompt = HARD_TEST_PROMPTS[test_name].format(**fmt_kwargs)
-    votes = [call_fn(prompt) for _ in range(3)]
-    # "pass" must be a real JSON boolean. A string "false", a missing key,
-    # a non-dict response, etc. is INVALID and counts as a failing vote --
-    # never coerced through Python truthiness.
-    passes = [valid_pass(v) for v in votes]
-    return {
-        "test": test_name,
-        "pass": len(passes) == 3 and all(p is True for p in passes),
-        "votes": votes,
-        "invalid_votes": sum(p is None for p in passes),
-    }
-
-
-def valid_pass(vote):
-    """True/False if the vote carries a JSON boolean `pass`; None if the
-    vote is malformed (not a dict, key missing, or value not a bool)."""
+def valid_combined_vote(vote):
+    """Per test name: True/False if that key holds a real JSON boolean;
+    None if malformed for that key specifically. Independent per key --
+    a malformed value on one test does not invalidate the other three's
+    votes; they remain independent checks even though they share one
+    call. If `vote` itself is not a dict, every key is None."""
     if not isinstance(vote, dict):
-        return None
-    v = vote.get("pass")
-    if v is True or v is False:
-        return v
-    return None
+        return {name: None for name in HARD_TEST_NAMES}
+    result = {}
+    for name in HARD_TEST_NAMES:
+        v = vote.get(name)
+        result[name] = v if (v is True or v is False) else None
+    return result
 
 
-def hard_tests(case: dict, draft: str, *, call_fn=call_judge_model) -> dict:
-    """Run all four hard tests for one (case, draft) pair. `case` must have
-    context, incoming, commitments_in_history, resolved_items keys —
-    missing keys default to empty so a test with nothing to check against
-    simply has nothing to flag."""
-    fmt = {
-        "context": case.get("context", ""),
-        "incoming": case.get("incoming", ""),
-        "draft": draft,
-        "commitments_in_history": case.get("commitments_in_history", "(none)"),
-        "resolved_items": case.get("resolved_items", "(none)"),
-    }
+def hard_tests(case: dict, draft: str, *, call_fn=call_judge_model,
+               votes: int = None, max_attempts: int = None) -> dict:
+    """Run all four hard tests in ONE combined call per attempt (see
+    COMBINED_HARD_TEST_PROMPT); unanimous agreement across `votes` valid
+    votes (config.HARD_TEST_VOTES, default 3) is required to pass each
+    test. `case` must have context, incoming, commitments_in_history,
+    resolved_items keys — missing keys default to empty so a test with
+    nothing to check against simply has nothing to flag. Every attempt
+    reuses the identical prompt, so it is sent with cacheable=True.
+
+    Each of the four tests accumulates its own valid boolean votes
+    independently: a malformed value on ONE test's key in a given
+    response does not consume that response as a vote for the other
+    three, which keep whatever valid value they got from it. Retries
+    (on a non-JSON call_fn response, or to top up any single test still
+    short of `votes` valid votes) continue until every test has `votes`
+    valid votes or `max_attempts` (config.HARD_TEST_MAX_ATTEMPTS,
+    default 5) total calls have been made.
+
+    If the cap is hit and ANY test still lacks enough valid votes,
+    EvaluationError is raised for the whole case. An evaluator that
+    cannot reliably answer is a failed EVALUATION, not a failed DRAFT —
+    it must surface as a harness-level error (the same "n error" bucket
+    APIConnectionError and IncompleteCaseError already land in), never
+    silently reported as the draft failing a hard test."""
+    votes_n = config.HARD_TEST_VOTES if votes is None else votes
+    max_attempts_n = config.HARD_TEST_MAX_ATTEMPTS if max_attempts is None else max_attempts
+    prompt = COMBINED_HARD_TEST_PROMPT.format(
+        context=case.get("context", ""),
+        incoming=case.get("incoming", ""),
+        draft=draft,
+        commitments_in_history=case.get("commitments_in_history", "(none)"),
+        resolved_items=case.get("resolved_items", "(none)"),
+    )
+    per_test_valid = {name: [] for name in HARD_TEST_NAMES}
+    invalid_counts = {name: 0 for name in HARD_TEST_NAMES}
+    raw_votes, attempts = [], 0
+
+    def _short():
+        return [n for n in HARD_TEST_NAMES if len(per_test_valid[n]) < votes_n]
+
+    while attempts < max_attempts_n and _short():
+        attempts += 1
+        try:
+            resp = call_fn(prompt, cacheable=True)
+        except EvaluationError:
+            continue  # whole response unparsable: retried, not a vote for anyone
+        raw_votes.append(resp)
+        parsed = valid_combined_vote(resp)
+        for name in HARD_TEST_NAMES:
+            if parsed[name] is None:
+                invalid_counts[name] += 1
+            elif len(per_test_valid[name]) < votes_n:
+                per_test_valid[name].append(parsed[name])
+
+    short = _short()
+    if short:
+        raise EvaluationError(
+            f"hard tests {short}: fewer than {votes_n} valid votes after "
+            f"{attempts} attempts (case {case.get('id', '?')})")
+
     return {
-        name: run_hard_test(name, call_fn=call_fn, **fmt)
-        for name in HARD_TEST_PROMPTS
+        name: {
+            "test": name,
+            "pass": all(v is True for v in per_test_valid[name]),
+            "votes": raw_votes,
+            "invalid_votes": invalid_counts[name],
+        }
+        for name in HARD_TEST_NAMES
     }
 
 
@@ -337,7 +377,7 @@ def specificity(prompt: str, draft: str, *, call_fn=call_judge_model):
 
 
 # --- Judge score, cost, latency -----------------------------------------
-# Judge: one rubric call per run, JUDGE_VALID_RUNS valid runs (default 5), median per dimension. "N/A"
+# Judge: one rubric call per run, JUDGE_VALID_RUNS valid runs (config default 3), median per dimension. "N/A"
 # dimensions are excluded from the overall mean, never scored as 3.
 # Independent of the hard tests and of specificity.
 
@@ -427,7 +467,7 @@ def judge(case: dict, draft: str, *, call_fn=call_judge_model,
                 f"{attempts} attempts (case {case.get('id', '?')})")
         attempts += 1
         try:
-            resp = call_fn(prompt)
+            resp = call_fn(prompt, cacheable=True)
         except EvaluationError as e:          # non-JSON / non-object output
             invalid.append({"error": str(e)})   # consumes an attempt, retried
             continue

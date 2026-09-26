@@ -1,0 +1,6 @@
+id,system,bucket,contact,model,backend,no_fabrication,no_contradicted_commitment,no_stale_item,no_new_commitment,all_hard_pass,specificity,n_prompt_facts,judge_instructions_and_style,judge_aligns_with_objectives,judge_addresses_commitments,judge_accounts_for_context,judge_overall,prompt_tokens,completion_tokens,cost_usd,latency_s,judge_attempts,judge_invalid_attempts,wall_s,error,ref_judge_overall
+c001,oss,routine,deng@isye.gatech.edu,llama3.1:8b,ollama,True,True,True,True,True,0.125,24,5.0,5.0,3.0,5.0,4.5,1752,42,0.0,12.81103312491905,5,0,87.2317490830319,,N/A
+c002,oss,stale_item,jason.sokolov@enron.com,llama3.1:8b,ollama,False,True,True,True,False,0.08,25,4.0,4.0,N/A,5.0,4.333333333333333,1055,17,0.0,4.5113604998914525,5,0,98.34068408294115,,N/A
+c003,oss,routine,ashley.baxter@enron.com,llama3.1:8b,ollama,False,True,True,False,False,0.08695652173913043,23,1.0,3.0,3.0,2.0,2.25,1384,59,0.0,7.438511541113257,5,0,169.01756708393805,,N/A
+c004,oss,buried_commitment,lance.cunningham@enron.com,llama3.1:8b,ollama,True,True,True,True,True,0.03125,32,1.0,2.0,2.0,2.0,1.75,1995,17,0.0,8.51371662504971,5,0,72.22644975001458,,N/A
+c005,oss,stale_item,kenneth.parkhill@enron.com,llama3.1:8b,ollama,False,True,True,False,False,0.07692307692307693,26,2.0,5.0,N/A,3.0,3.3333333333333335,1153,60,0.0,6.933866583043709,5,0,101.08538070798386,,N/A
