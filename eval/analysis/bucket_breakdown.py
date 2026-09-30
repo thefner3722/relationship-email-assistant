@@ -63,7 +63,7 @@ def load_system_rows(ts, system):
 
 if __name__ == "__main__":
     ts = sys.argv[1] if len(sys.argv) > 1 else latest_timestamp()
-    systems = [s for s in ["simple", "oss", "layer0"]
+    systems = [s for s in ["simple", "oss", "layer0", "bare"]
                if os.path.exists(os.path.join(RESULTS, f"{ts}_{s}.csv"))]
     if not systems:
         sys.exit(f"No result CSVs found for timestamp {ts}")
